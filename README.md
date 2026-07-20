@@ -1,4 +1,5 @@
 # ☀️ SENTINEL: Off-Grid Predictive Dual-Axis Solar Tracker
+(as of 20.07.2026)
 
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32-orange.svg)](https://platformio.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -44,4 +45,4 @@ Sentinel_Tracker/
 └── data/
     └── index.html         # Vanilla HTML/CSS/JS Mobile Admin Dashboard
 
-(as of 20.07.2026)
+
