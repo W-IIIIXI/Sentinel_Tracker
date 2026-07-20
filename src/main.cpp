@@ -22,14 +22,28 @@ Adafruit_MPU6050 mpu;
 float previousAccelMag = 0.0;
 unsigned long lastSensorPoll = 0;
 const int SENSOR_POLL_RATE_MS = 50; // Poll MPU-6050 at 20Hz
+float lastWindG = 0.0; // cached so /telemetry doesn't have to touch the IMU directly
 
 // --- GPS & SUN-PATH VARIABLES ---
-const float LATITUDE = 6.9271; 
-const float LONGITUDE = 79.8612;
-const float TIMEZONE_OFFSET = 5.5; 
+// These used to be hardcoded consts. They are now plain globals ("dynamic")
+// because the dashboard's /calibrate POST overwrites them at runtime. The
+// values below only act as a fallback until the first calibration arrives.
+float LATITUDE  = 6.9271;
+float LONGITUDE = 79.8612;
+float TIMEZONE_OFFSET = 5.5;
+bool  isCalibrated = false; // flips true once the dashboard has calibrated us at least once
 
-float targetPanAngle = 0.0;
+float targetPanAngle  = 0.0;
 float targetTiltAngle = 0.0;
+
+// --- MANUAL OVERRIDE STATE (driven by the D-pad in the dashboard) ---
+// The dashboard just sends discrete pan_left/pan_right/tilt_up/tilt_down
+// pulses, so we track the commanded angles here and let Module 3's motor
+// driver chase these values, the same way it will chase targetPanAngle/
+// targetTiltAngle in auto mode.
+float manualPanAngle  = 0.0;
+float manualTiltAngle = 0.0;
+const float MANUAL_STEP_DEG = 1.0; // degrees moved per D-pad pulse
 
 // --- FINITE STATE MACHINE DEFINITION ---
 enum TrackerState {
@@ -42,6 +56,17 @@ enum TrackerState {
 
 // Initialize in Hibernation mode to save power on boot
 TrackerState currentState = STATE_HIBERNATION;
+
+const char* stateToString(TrackerState s) {
+  switch (s) {
+    case STATE_HIBERNATION:       return "HIBERNATION";
+    case STATE_TRACKING:          return "TRACKING";
+    case STATE_WIND_STOW:         return "WIND_STOW";
+    case STATE_OVERCURRENT_FAULT: return "OVERCURRENT_FAULT";
+    case STATE_MANUAL_OVERRIDE:   return "MANUAL_OVERRIDE";
+    default:                      return "UNKNOWN";
+  }
+}
 
 // --- SENSOR READING FUNCTIONS ---
 DateTime getCurrentTime() {
@@ -66,6 +91,18 @@ float getWindVibration() {
 
   // Convert raw acceleration (m/s^2) to G-force for easier thresholding
   return deltaG / 9.81; 
+}
+
+// TODO(hardware): wire these up to real ADC channels once the panel-voltage
+// divider and current-sense resistor are on the board. Returning safe
+// placeholder values for now so /telemetry has something to serve and the
+// dashboard doesn't sit on "OFFLINE".
+float getPanelVoltage() {
+  return 0.0;
+}
+
+float getMotorCurrentMa() {
+  return 0.0;
 }
 
 // --- ASTRONOMICAL MATH FUNCTION ---
@@ -109,6 +146,131 @@ void calculateSunPath() {
   targetPanAngle = azimuth;
 }
 
+// --- WEB SERVER ROUTES ---
+
+void handleTelemetry(AsyncWebServerRequest *request) {
+  StaticJsonDocument<128> doc;
+  doc["voltage"] = getPanelVoltage();
+  doc["wind"]    = lastWindG;
+  doc["current"] = getMotorCurrentMa();
+
+  String payload;
+  serializeJson(doc, payload);
+  request->send(200, "application/json", payload);
+}
+
+void handleCommand(AsyncWebServerRequest *request) {
+  if (!request->hasParam("action")) {
+    request->send(400, "text/plain", "missing action");
+    return;
+  }
+  String action = request->getParam("action")->value();
+
+  if (action == "set_mode_manual") {
+    currentState = STATE_MANUAL_OVERRIDE;
+    // Seed manual angles from wherever auto-tracking last pointed, so
+    // switching modes doesn't cause a sudden jump.
+    manualPanAngle  = targetPanAngle;
+    manualTiltAngle = targetTiltAngle;
+
+  } else if (action == "set_mode_auto") {
+    currentState = isCalibrated ? STATE_TRACKING : STATE_HIBERNATION;
+
+  } else if (action == "pan_left") {
+    if (currentState == STATE_MANUAL_OVERRIDE) manualPanAngle -= MANUAL_STEP_DEG;
+
+  } else if (action == "pan_right") {
+    if (currentState == STATE_MANUAL_OVERRIDE) manualPanAngle += MANUAL_STEP_DEG;
+
+  } else if (action == "tilt_up") {
+    if (currentState == STATE_MANUAL_OVERRIDE) manualTiltAngle += MANUAL_STEP_DEG;
+
+  } else if (action == "tilt_down") {
+    if (currentState == STATE_MANUAL_OVERRIDE) manualTiltAngle -= MANUAL_STEP_DEG;
+
+  } else if (action == "force_stow") {
+    currentState = STATE_WIND_STOW; // existing stow logic drives to 0 degrees
+
+  } else if (action == "e_stop") {
+    currentState = STATE_OVERCURRENT_FAULT; // reuse the fault state as a hard lock
+
+  } else {
+    request->send(400, "text/plain", "unknown action");
+    return;
+  }
+
+  request->send(200, "text/plain", "ok");
+}
+
+// Body handler for POST /calibrate. The dashboard sends:
+// { "lat": 6.9271, "lon": 79.8612, "utcOffset": 5.5,
+//   "year": 2026, "month": 7, "day": 20,
+//   "hour": 14, "minute": 30, "second": 5 }
+void handleCalibrate(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, data, len);
+
+  if (err) {
+    request->send(400, "text/plain", "bad json");
+    return;
+  }
+
+  if (!doc.containsKey("lat") || !doc.containsKey("lon")) {
+    request->send(400, "text/plain", "missing lat/lon");
+    return;
+  }
+
+  // --- Dynamic variables: overwrite the sun-path constants in RAM ---
+  LATITUDE        = doc["lat"].as<float>();
+  LONGITUDE       = doc["lon"].as<float>();
+  TIMEZONE_OFFSET = doc["utcOffset"] | TIMEZONE_OFFSET; // keep old value if field absent
+
+  // --- Static variable: push the wall-clock time into the DS3231 hardware RTC ---
+  if (doc.containsKey("year") && doc.containsKey("month") && doc.containsKey("day") &&
+      doc.containsKey("hour") && doc.containsKey("minute") && doc.containsKey("second")) {
+    DateTime newTime(
+      doc["year"].as<int>(),
+      doc["month"].as<int>(),
+      doc["day"].as<int>(),
+      doc["hour"].as<int>(),
+      doc["minute"].as<int>(),
+      doc["second"].as<int>()
+    );
+    rtc.adjust(newTime);
+  }
+
+  isCalibrated = true;
+
+  // Once we know where and when we are, it's safe to start tracking
+  // (unless something else, like manual override or wind stow, is active).
+  if (currentState == STATE_HIBERNATION) {
+    currentState = STATE_TRACKING;
+  }
+
+  Serial.printf("Calibrated: lat=%.4f lon=%.4f tz=%.2f\n", LATITUDE, LONGITUDE, TIMEZONE_OFFSET);
+
+  request->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+void setupWebServer() {
+  // Serve the dashboard itself
+  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+  server.on("/telemetry", HTTP_GET, handleTelemetry);
+  server.on("/command", HTTP_GET, handleCommand);
+
+  // POST /calibrate has a body, so it needs the 3-arg body handler,
+  // registered as the body callback of a no-op onRequest handler.
+  server.on("/calibrate", HTTP_POST,
+    [](AsyncWebServerRequest *request) { /* handled in body callback below */ },
+    NULL,
+    handleCalibrate
+  );
+
+  server.begin();
+  Serial.println("Web server started.");
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("\n--- Continuous Sentinel Boot ---");
@@ -145,6 +307,9 @@ void setup() {
   WiFi.softAP(ssid, password);
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP()); 
+
+  // 6. Bring up the dashboard + API routes (was missing: server.begin() too)
+  setupWebServer();
 }
 
 void loop() {
@@ -152,10 +317,10 @@ void loop() {
   if (millis() - lastSensorPoll >= SENSOR_POLL_RATE_MS) {
     lastSensorPoll = millis();
 
-    float currentWindG = getWindVibration();
+    lastWindG = getWindVibration();
 
     // Safety Override Check (The Virtual Anemometer)
-    if (currentWindG > 1.5 && currentState != STATE_WIND_STOW) {
+    if (lastWindG > 1.5 && currentState != STATE_WIND_STOW) {
       Serial.println("CRITICAL WIND DETECTED! Overriding FSM to STOW MODE.");
       currentState = STATE_WIND_STOW;
     }
@@ -166,11 +331,13 @@ void loop() {
     
     case STATE_HIBERNATION:
       // Code to ensure motors are de-energized
-      // (Transition to STATE_TRACKING will happen based on solar panel ADC voltage later)
+      // Waits for calibration data from the dashboard (or ADC-based
+      // daylight detection later) before moving to STATE_TRACKING.
       break;
 
     case STATE_TRACKING:
       // Constantly crunch the math to update targetPanAngle and targetTiltAngle
+      // using the (possibly dashboard-calibrated) LATITUDE/LONGITUDE/TIMEZONE_OFFSET
       calculateSunPath();
       
       // (Module 3: Code to drive motors to match these angles will go here)
@@ -178,6 +345,8 @@ void loop() {
 
     case STATE_WIND_STOW:
       // Override logic to flatten the panel to 0 degrees
+      targetPanAngle = 0.0;
+      targetTiltAngle = 0.0;
       break;
 
     case STATE_OVERCURRENT_FAULT:
@@ -185,7 +354,9 @@ void loop() {
       break;
 
     case STATE_MANUAL_OVERRIDE:
-      // Dashboard joystick control logic
+      // Dashboard D-pad control logic: manualPanAngle / manualTiltAngle are
+      // updated in handleCommand(); Module 3's motor driver should chase
+      // these instead of targetPanAngle/targetTiltAngle while in this state.
       break;
   }
 

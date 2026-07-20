@@ -150,6 +150,20 @@
     .btn-mode { background-color: var(--auto); border-color: var(--auto); color: #04122b; width: 100%; }
     .btn-mode.manual-active { background-color: var(--amber); border-color: var(--amber); color: #2b1c00; }
 
+    .cal-input {
+        background-color: var(--surface-raised);
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: 0.95em;
+        padding: 4px 8px;
+        width: 110px;
+        text-align: right;
+    }
+    .cal-input:focus { outline: 1px solid var(--auto); }
+    .btn-secondary { background-color: transparent; border-color: var(--hairline); color: var(--text-secondary); width: 100%; margin-top: 8px; }
+
     .btn-stow { background-color: transparent; border-color: var(--amber); color: var(--amber); width: 100%; margin-top: 8px; }
     .btn-danger { background-color: var(--danger); border-color: var(--danger); color: #fff; width: 100%; margin-top: 8px; }
 
@@ -241,6 +255,32 @@
     <div class="card">
         <button class="btn btn-stow" onclick="sendCommand('force_stow', {toast: true, label: 'FORCE STOW'})">FORCE STOW (0°)</button>
         <button class="btn btn-danger" onclick="sendCommand('e_stop', {toast: true, label: 'EMERGENCY STOP'})">EMERGENCY STOP</button>
+    </div>
+
+    <div class="card">
+        <div class="status-row">
+            <span class="status-label">Calibration</span>
+            <span id="cal-status" class="status-pill mode-auto">NOT SENT</span>
+        </div>
+        <div class="telemetry-row">
+            <span class="label">Latitude</span>
+            <input type="number" id="cal-lat" class="cal-input" step="0.0001" placeholder="6.9271">
+        </div>
+        <div class="telemetry-row">
+            <span class="label">Longitude</span>
+            <input type="number" id="cal-lon" class="cal-input" step="0.0001" placeholder="79.8612">
+        </div>
+        <div class="telemetry-row">
+            <span class="label">UTC offset (auto)</span>
+            <span id="cal-tz" class="value">--</span>
+        </div>
+        <div class="telemetry-row">
+            <span class="label">Device time (auto)</span>
+            <span id="cal-time" class="value">--</span>
+        </div>
+        <button class="btn btn-secondary" id="btn-geo" onclick="useDeviceLocation()">TRY DEVICE GPS</button>
+        <button class="btn btn-mode" id="btn-calibrate" onclick="sendCalibration()">CALIBRATE SYSTEM</button>
+        <div class="d-pad-hint">GPS often fails on the AP's plain-HTTP page — if so, paste coordinates from Google Maps instead.</div>
     </div>
 
 </div>
@@ -374,6 +414,89 @@
     setInterval(fetchTelemetry, 2000);
     setInterval(tickLastUpdated, 1000);
     fetchTelemetry();
+
+    // ---------- Calibration ----------
+    // Sends the phone's own clock + a lat/lon (device GPS if it works,
+    // otherwise manually entered) to the ESP32 so it can set its RTC
+    // and the sun-path constants without needing internet access.
+    function updateClockPreview() {
+        const now = new Date();
+        document.getElementById('cal-time').textContent = now.toLocaleString();
+        const tzHours = -now.getTimezoneOffset() / 60;
+        document.getElementById('cal-tz').textContent = 'UTC' + (tzHours >= 0 ? '+' : '') + tzHours;
+    }
+
+    function useDeviceLocation() {
+        if (!navigator.geolocation) {
+            showToast('Geolocation not supported here');
+            return;
+        }
+        const btn = document.getElementById('btn-geo');
+        btn.disabled = true;
+        btn.textContent = 'LOCATING...';
+        navigator.geolocation.getCurrentPosition(
+            function (pos) {
+                document.getElementById('cal-lat').value = pos.coords.latitude.toFixed(5);
+                document.getElementById('cal-lon').value = pos.coords.longitude.toFixed(5);
+                btn.disabled = false;
+                btn.textContent = 'TRY DEVICE GPS';
+                showToast('Location captured');
+            },
+            function () {
+                // Most likely cause: this page is served over plain HTTP from
+                // the ESP32's soft-AP, and the browser blocks Geolocation on
+                // insecure origins. Manual entry is the reliable fallback.
+                btn.disabled = false;
+                btn.textContent = 'TRY DEVICE GPS';
+                showToast('GPS unavailable — enter coordinates manually');
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+        );
+    }
+
+    async function sendCalibration() {
+        const lat = parseFloat(document.getElementById('cal-lat').value);
+        const lon = parseFloat(document.getElementById('cal-lon').value);
+        if (isNaN(lat) || isNaN(lon)) {
+            showToast('Enter latitude and longitude first');
+            return;
+        }
+
+        const now = new Date();
+        const payload = {
+            lat: lat,
+            lon: lon,
+            utcOffset: -now.getTimezoneOffset() / 60,
+            year: now.getFullYear(),
+            month: now.getMonth() + 1,
+            day: now.getDate(),
+            hour: now.getHours(),
+            minute: now.getMinutes(),
+            second: now.getSeconds()
+        };
+
+        const btn = document.getElementById('btn-calibrate');
+        btn.disabled = true;
+        btn.textContent = 'SENDING...';
+        try {
+            const res = await fetch('/calibrate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('bad status ' + res.status);
+            document.getElementById('cal-status').textContent = 'SET';
+            showToast('Calibration sent');
+        } catch (err) {
+            showToast('Failed to reach device');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'CALIBRATE SYSTEM';
+        }
+    }
+
+    setInterval(updateClockPreview, 1000);
+    updateClockPreview();
 </script>
 
 </body>
