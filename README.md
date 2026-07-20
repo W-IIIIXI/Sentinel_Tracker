@@ -43,3 +43,5 @@ Sentinel_Tracker/
 │   └── main.cpp           # C++ Backend (FSM, I2C sensor fusion, Async Web Server)
 └── data/
     └── index.html         # Vanilla HTML/CSS/JS Mobile Admin Dashboard
+
+(as of 20.07.2026)
