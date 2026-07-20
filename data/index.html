@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#14171a">
+<title>Sentinel Tracker Admin</title>
+<style>
+    :root {
+        --bg: #14171a;
+        --surface: #1c2024;
+        --surface-raised: #23282d;
+        --hairline: #2e3338;
+        --text-primary: #e8eaed;
+        --text-secondary: #8b929a;
+        --text-muted: #5a6068;
+        --amber: #ffb020;
+        --live: #34d399;
+        --danger: #f0453a;
+        --auto: #4d8dff;
+        --font-ui: -apple-system, "Segoe UI", Roboto, Tahoma, sans-serif;
+        --font-mono: "SF Mono", "Cascadia Code", "Consolas", "Menlo", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        font-family: var(--font-ui);
+        background-color: var(--bg);
+        color: var(--text-primary);
+        margin: 0;
+        padding: 20px 16px 40px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .container { width: 100%; max-width: 400px; }
+
+    /* Header */
+    .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+    }
+    .header h1 {
+        font-size: 1.15em;
+        letter-spacing: 0.08em;
+        margin: 0;
+        font-weight: 600;
+    }
+    .conn-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.72em;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+    }
+    .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+    .conn-badge.live { color: var(--live); }
+    .conn-badge.live .conn-dot { background: var(--live); animation: pulse 2s ease-in-out infinite; }
+    .conn-badge.offline { color: var(--danger); }
+    .conn-badge.offline .conn-dot { background: var(--danger); }
+
+    @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+        50% { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .conn-badge.live .conn-dot { animation: none; }
+    }
+
+    /* Cards */
+    .card {
+        background-color: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 14px;
+    }
+
+    .status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--hairline);
+    }
+    .status-label { font-size: 0.8em; color: var(--text-secondary); }
+    .status-pill {
+        font-size: 0.76em;
+        font-weight: 700;
+        padding: 4px 10px;
+        border-radius: 100px;
+        letter-spacing: 0.03em;
+    }
+    .status-pill.mode-auto { background: rgba(77, 141, 255, 0.15); color: var(--auto); }
+    .status-pill.mode-manual { background: rgba(255, 176, 32, 0.15); color: var(--amber); }
+
+    .telemetry-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin: 10px 0;
+        font-size: 0.9em;
+    }
+    .telemetry-row .label { color: var(--text-secondary); }
+    .telemetry-row .value {
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        font-size: 1.05em;
+    }
+    .value.warn { color: var(--danger); font-weight: 700; }
+
+    .updated-row {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid var(--hairline);
+        font-size: 0.72em;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        text-align: right;
+    }
+
+    /* Buttons */
+    .btn {
+        background-color: var(--surface-raised);
+        color: var(--text-primary);
+        border: 1px solid var(--hairline);
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-size: 0.95em;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.1s, filter 0.15s, opacity 0.15s;
+        font-family: var(--font-ui);
+    }
+    .btn:active:not(:disabled) { transform: scale(0.96); }
+    .btn:focus-visible { outline: 2px solid var(--auto); outline-offset: 2px; }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    @media (hover: hover) {
+        .btn:hover:not(:disabled) { filter: brightness(1.12); }
+    }
+
+    .btn-mode { background-color: var(--auto); border-color: var(--auto); color: #04122b; width: 100%; }
+    .btn-mode.manual-active { background-color: var(--amber); border-color: var(--amber); color: #2b1c00; }
+
+    .btn-stow { background-color: transparent; border-color: var(--amber); color: var(--amber); width: 100%; margin-top: 8px; }
+    .btn-danger { background-color: var(--danger); border-color: var(--danger); color: #fff; width: 100%; margin-top: 8px; }
+
+    /* D-Pad */
+    .control-group { text-align: center; margin-top: 16px; }
+    .d-pad {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin: 0 auto;
+        width: 190px;
+    }
+    .d-pad .btn { margin: 0; padding: 14px 0; font-size: 0.85em; }
+    .d-pad .empty { visibility: hidden; }
+    .d-pad-hint { margin-top: 10px; font-size: 0.75em; color: var(--text-muted); }
+
+    /* Toast */
+    .toast {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%) translateY(12px);
+        background: var(--surface-raised);
+        color: var(--text-primary);
+        border: 1px solid var(--hairline);
+        padding: 10px 18px;
+        border-radius: 8px;
+        font-size: 0.82em;
+        font-weight: 600;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s, transform 0.2s;
+        z-index: 10;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="header">
+        <h1>SENTINEL</h1>
+        <div class="conn-badge offline" id="conn-status">
+            <span class="conn-dot"></span>
+            <span id="conn-text">OFFLINE</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="status-row">
+            <span class="status-label">System status</span>
+            <span id="fsm-state" class="status-pill mode-auto">AUTO TRACKING</span>
+        </div>
+        <div class="telemetry-row">
+            <span class="label">Solar panel voltage</span>
+            <span id="volt-val" class="value">13.4 V</span>
+        </div>
+        <div class="telemetry-row">
+            <span class="label">Wind vibration (IMU)</span>
+            <span id="wind-val" class="value">0.12 g</span>
+        </div>
+        <div class="telemetry-row">
+            <span class="label">Motor current</span>
+            <span id="current-val" class="value">450 mA</span>
+        </div>
+        <div class="updated-row">Updated <span id="last-updated">--</span></div>
+    </div>
+
+    <div class="card">
+        <button class="btn btn-mode" id="btn-mode" onclick="toggleMode()">SWITCH TO MANUAL MODE</button>
+
+        <div class="control-group">
+            <div class="d-pad" id="d-pad">
+                <div class="empty"></div>
+                <button class="btn" data-cmd="tilt_up" disabled>UP</button>
+                <div class="empty"></div>
+                <button class="btn" data-cmd="pan_left" disabled>LEFT</button>
+                <div class="empty"></div>
+                <button class="btn" data-cmd="pan_right" disabled>RIGHT</button>
+                <div class="empty"></div>
+                <button class="btn" data-cmd="tilt_down" disabled>DOWN</button>
+                <div class="empty"></div>
+            </div>
+            <div class="d-pad-hint" id="d-pad-hint">Switch to manual mode to steer</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <button class="btn btn-stow" onclick="sendCommand('force_stow', {toast: true, label: 'FORCE STOW'})">FORCE STOW (0°)</button>
+        <button class="btn btn-danger" onclick="sendCommand('e_stop', {toast: true, label: 'EMERGENCY STOP'})">EMERGENCY STOP</button>
+    </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+    // ---------- State ----------
+    let isManual = false;
+    let panTimer = null;
+    let lastUpdate = null;
+    const PAN_REPEAT_MS = 180;
+    const WIND_WARNING_G = 0.5;
+
+    // ---------- Mode toggle ----------
+    function toggleMode() {
+        isManual = !isManual;
+        const modeBtn = document.getElementById('btn-mode');
+        const stateText = document.getElementById('fsm-state');
+
+        if (isManual) {
+            modeBtn.textContent = 'SWITCH TO AUTO MODE';
+            modeBtn.classList.add('manual-active');
+            stateText.textContent = 'MANUAL OVERRIDE';
+            stateText.className = 'status-pill mode-manual';
+            sendCommand('set_mode_manual');
+        } else {
+            modeBtn.textContent = 'SWITCH TO MANUAL MODE';
+            modeBtn.classList.remove('manual-active');
+            stateText.textContent = 'AUTO TRACKING';
+            stateText.className = 'status-pill mode-auto';
+            sendCommand('set_mode_auto');
+        }
+        setDpadEnabled(isManual);
+    }
+
+    function setDpadEnabled(enabled) {
+        document.querySelectorAll('#d-pad [data-cmd]').forEach(function (btn) {
+            btn.disabled = !enabled;
+        });
+        document.getElementById('d-pad-hint').textContent = enabled
+            ? 'Hold to move · arrow keys work too'
+            : 'Switch to manual mode to steer';
+    }
+
+    // ---------- Commands ----------
+    // Talks to the ESP32's /command route. Fails silently to the console if
+    // the device isn't reachable - a dropped command shouldn't block the UI.
+    function sendCommand(cmd, opts) {
+        opts = opts || {};
+        console.log('Command sent to ESP32: ' + cmd);
+        if (opts.toast) showToast((opts.label || cmd) + ' sent');
+        fetch('/command?action=' + cmd).catch(function () {
+            console.warn('Command not confirmed (device offline?): ' + cmd);
+        });
+    }
+
+    // ---------- Toast ----------
+    let toastTimer = null;
+    function showToast(msg) {
+        const toast = document.getElementById('toast');
+        toast.textContent = msg;
+        toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 1600);
+    }
+
+    // ---------- D-pad hold-to-move ----------
+    document.querySelectorAll('#d-pad [data-cmd]').forEach(function (btn) {
+        const cmd = btn.dataset.cmd;
+        const start = function (e) {
+            e.preventDefault();
+            if (btn.disabled) return;
+            sendCommand(cmd);
+            clearInterval(panTimer);
+            panTimer = setInterval(function () { sendCommand(cmd); }, PAN_REPEAT_MS);
+        };
+        const stop = function () { clearInterval(panTimer); };
+        btn.addEventListener('mousedown', start);
+        btn.addEventListener('touchstart', start, { passive: false });
+        btn.addEventListener('mouseup', stop);
+        btn.addEventListener('mouseleave', stop);
+        btn.addEventListener('touchend', stop);
+    });
+
+    // ---------- Keyboard control (desktop) ----------
+    document.addEventListener('keydown', function (e) {
+        if (!isManual) return;
+        const map = { ArrowUp: 'tilt_up', ArrowDown: 'tilt_down', ArrowLeft: 'pan_left', ArrowRight: 'pan_right' };
+        const cmd = map[e.key];
+        if (cmd) { e.preventDefault(); sendCommand(cmd); }
+    });
+
+    // ---------- Telemetry polling ----------
+    // Expects a GET /telemetry endpoint returning JSON, e.g.
+    // { "voltage": 13.4, "wind": 0.12, "current": 450 }
+    async function fetchTelemetry() {
+        try {
+            const res = await fetch('/telemetry');
+            if (!res.ok) throw new Error('bad status ' + res.status);
+            const data = await res.json();
+
+            document.getElementById('volt-val').textContent = data.voltage.toFixed(1) + ' V';
+            document.getElementById('current-val').textContent = Math.round(data.current) + ' mA';
+
+            const windEl = document.getElementById('wind-val');
+            windEl.textContent = data.wind.toFixed(2) + ' g';
+            windEl.classList.toggle('warn', data.wind >= WIND_WARNING_G);
+
+            setConnection(true);
+            lastUpdate = Date.now();
+        } catch (err) {
+            setConnection(false);
+        }
+    }
+
+    function setConnection(online) {
+        const badge = document.getElementById('conn-status');
+        const text = document.getElementById('conn-text');
+        badge.className = 'conn-badge ' + (online ? 'live' : 'offline');
+        text.textContent = online ? 'LIVE' : 'OFFLINE';
+    }
+
+    function tickLastUpdated() {
+        const el = document.getElementById('last-updated');
+        if (!lastUpdate) { el.textContent = '--'; return; }
+        const secs = Math.round((Date.now() - lastUpdate) / 1000);
+        el.textContent = secs < 60 ? secs + 's ago' : Math.round(secs / 60) + 'm ago';
+    }
+
+    setInterval(fetchTelemetry, 2000);
+    setInterval(tickLastUpdated, 1000);
+    fetchTelemetry();
+</script>
+
+</body>
+</html>
